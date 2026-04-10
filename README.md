@@ -1,8 +1,13 @@
 # Cloud-Native Security for Multi-Agent AI Systems
 
+> **CSCI 420 – Cloud Computing | William & Mary | Spring 2026**
+> **Project Type:** Cloudify Your Interest
+
+---
+
 ## Quickstart
 
-**Prerequisites:** AWS account, AWS credentials in `~/.aws/credentials`, Python 3.11+, [uv](https://docs.astral.sh/uv/)
+**Prerequisites:** AWS Academy account with credentials in `~/.aws/credentials`, Python 3.11+, [uv](https://docs.astral.sh/uv/)
 
 ```bash
 # 1. Install dependencies
@@ -13,24 +18,16 @@ echo "OPENAI_API_KEY=sk-..." > .env
 
 # 3. Run a search — first run bootstraps everything automatically:
 #    - pushes OPENAI_API_KEY from .env into AWS Secrets Manager
-#    - deploys the CloudFormation sandbox stack (~30–60s)
-#    - invokes the Lambda and returns a structured result
+#    - deploys the CloudFormation sandbox stack (~30–60s, one-time per session)
+#    - invokes the Lambda and returns a structured, filtered result
 uv run python scripts/invoke_search.py "your search query"
 
 # 4. Tear down sandbox resources when done
 uv run python scripts/teardown.py
 ```
 
-> The sandbox stack persists across searches in a session and is automatically
-> deleted by the Claude Code Stop hook when the session ends.
-
----
-
-
-
-> **CSCI 420 – Cloud Computing | William & Mary | Spring 2026**
-> **Project Type:** Cloudify Your Interest
-> **Team size:** 2–3 students
+> The sandbox stack persists across searches within a session and is
+> automatically deleted by the Claude Code Stop hook when the session ends.
 
 ---
 
@@ -38,7 +35,7 @@ uv run python scripts/teardown.py
 
 This project investigates how cloud-native principles — isolation, ephemeral environments, and resource lifecycle management — can be applied to securing multi-agent AI systems. The central question: **can cloud sandboxing enforce meaningful security boundaries between agents operating at different trust levels?**
 
-We demonstrate this through a two-agent system where an orchestrator delegates tasks to sub-agents that run inside fresh, isolated cloud sandboxes. Each sub-agent spins up, does its work, filters its output, and tears down its own resources — giving us a model for containing prompt injection and supply-chain threats at the infrastructure level.
+The threat we address is **prompt injection via web search**: when an AI agent fetches live web content, a malicious page can embed instructions that hijack the agent's behavior. We contain this by running all web searches inside an ephemeral AWS Lambda sandbox. The sandbox fetches and processes the content, then returns only a filtered, schema-constrained result — raw web content never reaches the orchestrator's context.
 
 ---
 
@@ -46,109 +43,92 @@ We demonstrate this through a two-agent system where an orchestrator delegates t
 
 Multi-agent AI systems face a class of threats that traditional application security wasn't designed for:
 
-- **Prompt injection** — a malicious input to one agent can hijack the behavior of others in the pipeline
-- **Supply-chain vulnerabilities** — tools, plugins, or sub-agents pulled in at runtime may carry adversarial payloads
+- **Prompt injection** — malicious content in tool outputs (e.g. web search results) can hijack agent behavior
 - **Over-privileged context propagation** — agents sharing memory or credentials can leak sensitive state laterally
+- **Supply-chain vulnerabilities** — tools or sub-agents pulled in at runtime may carry adversarial payloads
 
-Cloud infrastructure already has proven primitives for isolation: containers, VMs, VPCs, IAM roles. This project asks whether those primitives, applied to agent lifecycles, can provide a practical security model.
+Cloud infrastructure has proven primitives for isolation: serverless functions, IAM roles, Secrets Manager. This project applies those primitives to agent tool calls, using web search as a concrete proof of concept.
 
 ---
 
 ## Deliverables
 
-| # | Deliverable | Description |
-|---|------------|-------------|
-| 1 | **Sub-agent creation skill** | Spawns a sub-agent and simultaneously provisions a cloud sandbox (container or lightweight VM on AWS) with appropriately scoped IAM permissions |
-| 2 | **Response & teardown skill** | Handles sub-agent response — applies context filtering to strip sensitive/irrelevant data — then tears down all cloud resources on completion |
-| 3 | **Two-agent demo** | End-to-end demonstration using both skills: orchestrator receives a task → delegates to sandboxed sub-agent → receives filtered result → sandbox destroyed |
-| 4 | **Written analysis** | 3–5 page paper linking cloud isolation primitives to agent security challenges, with the demo as a proof of concept |
+| # | Deliverable | Status | Description |
+|---|------------|--------|-------------|
+| 1 | **`web-search-sandbox` skill** | ✅ Complete | Claude Code skill that provisions a Lambda sandbox on first use and invokes it for each search |
+| 2 | **`web-search-teardown` skill** | ✅ Complete | Destroys all sandbox resources; called manually or automatically via Stop hook |
+| 3 | **Two-agent demo** | In progress | End-to-end demonstration: orchestrator → sandboxed search → filtered result → teardown |
+| 4 | **Written analysis** | In progress | 3–5 page paper — due April 23 |
 
 ---
 
-## Technical Approach
+## How It Works
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                  Orchestrator Agent                  │
-│              (trusted, persistent env)               │
+│              Orchestrator (Claude Code)              │
+│         uses web-search-sandbox skill                │
 └──────────────────────┬──────────────────────────────┘
-                       │ task dispatch
+                       │ boto3 invoke (synchronous)
                        ▼
-         ┌─────────────────────────┐
-         │   Sub-agent Creation    │  ← Skill 1
-         │  + Cloud Sandbox Spin-up│
-         │  (fresh container / VM) │
-         └────────────┬────────────┘
-                      │ executes in isolation
+         ┌─────────────────────────────┐
+         │     AWS Lambda Function     │  ← deployed via CloudFormation
+         │     (web-search-sandbox-fn) │
+         │                             │
+         │  1. fetch API key from      │
+         │     Secrets Manager         │
+         │  2. call OpenAI GPT-4o-mini │
+         │     with web_search_preview │
+         │  3. extract & filter result │
+         └────────────┬────────────────┘
+                      │ { query, summary, sources[], timestamp }
                       ▼
-         ┌─────────────────────────┐
-         │      Sub-Agent          │
-         │  (ephemeral, scoped IAM)│
-         │  · does work            │
-         │  · filters context      │
-         └────────────┬────────────┘
-                      │ cleaned result
-                      ▼
-         ┌─────────────────────────┐
-         │  Response + Teardown    │  ← Skill 2
-         │  · returns result       │
-         │  · destroys all cloud   │
-         │    resources            │
-         └─────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│              Orchestrator (Claude Code)              │
+│  uses result — raw web content never seen here       │
+│  uses web-search-teardown skill at session end       │
+└─────────────────────────────────────────────────────┘
 ```
 
-**Cloud primitives used:**
-- **AWS EC2 / containers** — ephemeral runtime isolation
-- **IAM roles** — least-privilege permissions scoped per sub-agent
-- **VPCs** — network-level isolation between sandbox and host environment
-- **CloudFormation** — programmatic resource lifecycle management
+**Security properties:**
+- The Lambda's IAM role (`LabRole`) is scoped to Secrets Manager and CloudWatch Logs only — no other AWS resources are accessible from inside the sandbox
+- The structured response schema (`query`, `summary`, `sources[]`, `timestamp`) is enforced in the Lambda — any injected content outside this schema is discarded before the result crosses back to the orchestrator
+- The CloudFormation stack (and with it the Lambda execution environment) is destroyed at session end, leaving no persistent attack surface
 
 ---
 
-## Written Analysis — Scope
-
-The writeup will cover:
-
-1. **Background** — how existing agent frameworks handle (or fail to handle) trust boundaries
-2. **Cloud isolation primitives** — containers vs. VMs, IAM scoping, VPC segmentation, and their security trade-offs (connecting to course material on multitenancy and ephemeral runtimes)
-3. **Threat model** — how the sandbox architecture addresses prompt injection and supply-chain attacks
-4. **Demo walkthrough** — the two-agent system as a proof of concept
-5. **Limitations and open questions** — what this approach doesn't solve; directions for future work
-
----
-
-## Course Requirements
-
-| Requirement | Details |
-|-------------|---------|
-| **Team** | 2–3 students (Cloudify Your Interest track) |
-| **Proposal** | 1-paragraph description — **due Wednesday, April 1** |
-| **Written paper** | 3–5 pages — **due April 23** |
-| **Presentation** | 5 minutes, live or pre-recorded — **shared in class April 28 or 30** *(no extensions)* |
-
-**Grading criteria:**
-- Correctness of technical content in the writeup
-- Clarity of the presentation
-- Insightfulness brought to the topic
-
----
-
-## Repo Structure (planned)
+## Repo Structure
 
 ```
 .
-├── README.md
-├── demo/
-│   ├── orchestrator.py        # orchestrator agent
-│   └── subagent.py            # sub-agent logic
-├── skills/
-│   ├── create_sandbox.py      # Skill 1: sub-agent + cloud sandbox creation
-│   └── respond_and_teardown.py # Skill 2: context filter + resource teardown
 ├── infra/
-│   └── sandbox_template.yaml  # CloudFormation / IaC for sandbox provisioning
-└── writeup/
-    └── paper.md               # 3–5 page written analysis
+│   └── sandbox_template.yaml     # CloudFormation: Lambda function (uses LabRole)
+├── scripts/
+│   ├── invoke_search.py          # Skill 1 backend: ensure stack + invoke Lambda
+│   ├── teardown.py               # Skill 2 backend: delete stack (idempotent)
+│   └── lambda_handler.py         # Lambda source of truth (embedded inline in CFN)
+├── skills/
+│   ├── web-search-sandbox/
+│   │   └── SKILL.md              # Claude Code skill: sandboxed web search
+│   └── web-search-teardown/
+│       └── SKILL.md              # Claude Code skill: destroy sandbox resources
+├── .claude/
+│   └── settings.json             # Stop hook: auto-teardown at session end
+├── pyproject.toml
+└── README.md
 ```
+
+---
+
+## Cloud Primitives Used
+
+| Primitive | Role in This Project |
+|---|---|
+| **AWS Lambda** | Ephemeral, isolated execution environment for each search session |
+| **CloudFormation** | Programmatic lifecycle management — stack created at session start, destroyed at end |
+| **AWS Secrets Manager** | API key stored outside the agent's context; fetched only inside the sandbox |
+| **IAM (LabRole)** | Least-privilege execution — Lambda can only read one secret and write logs |
+| **Claude Code hooks** | Session-end automation — Stop hook triggers teardown without manual intervention |
 
 ---
 
@@ -156,8 +136,28 @@ The writeup will cover:
 
 | Course Topic | How It Appears Here |
 |---|---|
-| Containers vs. VMs | Isolation trade-off for sub-agent sandboxes |
-| Multitenancy | Modeling agents at different trust levels as "tenants" |
-| Ephemeral runtimes | Sub-agents as fully disposable execution environments |
-| IAM & VPCs | Enforcing least-privilege and network isolation per agent |
-| Resource lifecycle management | Automated teardown as a security property, not just cost hygiene |
+| Ephemeral runtimes | Lambda sandbox is created per-session and destroyed on exit — the runtime is fully disposable |
+| Resource lifecycle management | CloudFormation stack creation/deletion is the security boundary, not just cost hygiene |
+| IAM & least privilege | Lambda role is scoped to one secret; no lateral movement possible from inside the sandbox |
+| Multitenancy | Orchestrator and sandbox are modeled as separate tenants with an explicit trust boundary |
+| Containers vs. serverless | Lambda (Firecracker microVM) chosen for instant teardown; paper discusses Fargate/EC2 trade-offs |
+
+---
+
+## Written Analysis — Scope
+
+1. **Background** — how existing agent frameworks handle (or fail to handle) trust boundaries
+2. **Cloud isolation primitives** — serverless vs. containers vs. VMs, IAM scoping, and their security trade-offs
+3. **Threat model** — how the sandbox architecture addresses prompt injection via web search
+4. **Demo walkthrough** — the two-skill system as a proof of concept
+5. **Limitations** — what this approach doesn't solve (e.g. response content still trusted, no VPC isolation in Lambda default networking)
+
+---
+
+## Course Requirements
+
+| Requirement | Details |
+|-------------|---------|
+| **Proposal** | 1-paragraph description — **due April 1** ✅ |
+| **Written paper** | 3–5 pages — **due April 23** |
+| **Presentation** | 5 minutes — **April 28 or 30** *(no extensions)* |
