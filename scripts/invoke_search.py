@@ -18,9 +18,70 @@ from botocore.exceptions import ClientError
 STACK_NAME = "web-search-sandbox"
 FUNCTION_NAME = "web-search-sandbox-fn"
 REGION = "us-east-1"
+SECRET_NAME = "openai-api-key"
 
-# Path to the CloudFormation template, relative to this script's location.
+# Paths relative to this script's location.
 TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "..", "infra", "sandbox_template.yaml")
+ENV_PATH = os.path.join(os.path.dirname(__file__), "..", ".env")
+
+
+def load_dotenv(path):
+    """
+    Parse a .env file and return a dict of key/value pairs.
+
+    Handles plain values, single-quoted, and double-quoted values.
+    Ignores blank lines and comments (#).
+
+    Args:
+        path (str): Path to the .env file.
+
+    Returns:
+        dict: Parsed key/value pairs.
+    """
+    env = {}
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            env[key.strip()] = value.strip().strip('"').strip("'")
+    return env
+
+
+def ensure_secret():
+    """
+    Ensure the OpenAI API key exists in Secrets Manager.
+
+    If the secret already exists, does nothing (fast path).
+    If it doesn't exist, reads OPENAI_API_KEY from the .env file in the
+    project root and creates the secret.
+
+    Raises:
+        FileNotFoundError: If the .env file is missing and the secret doesn't exist.
+        KeyError: If OPENAI_API_KEY is not present in the .env file.
+    """
+    sm = boto3.client("secretsmanager", region_name=REGION)
+
+    try:
+        sm.describe_secret(SecretId=SECRET_NAME)
+        # Secret already exists — nothing to do.
+        return
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ResourceNotFoundException":
+            raise
+
+    # Secret not found — load from .env and create it.
+    print(f"Secret '{SECRET_NAME}' not found. Loading from .env...")
+    env = load_dotenv(ENV_PATH)
+    api_key = env["OPENAI_API_KEY"]
+
+    sm.create_secret(
+        Name=SECRET_NAME,
+        SecretString=api_key,
+        Description="OpenAI API key for web-search sandbox Lambda",
+    )
+    print(f"Secret '{SECRET_NAME}' created in Secrets Manager.")
 
 
 def get_stack_status(cfn):
@@ -42,12 +103,27 @@ def get_stack_status(cfn):
         raise
 
 
+def get_lab_role_arn():
+    """
+    Resolve the LabRole ARN for this AWS Academy account.
+
+    AWS Academy accounts have a pre-existing 'LabRole' that must be used
+    instead of creating IAM roles (iam:CreateRole is not permitted).
+
+    Returns:
+        str: The LabRole ARN, e.g. arn:aws:iam::123456789012:role/LabRole
+    """
+    iam = boto3.client("iam", region_name=REGION)
+    role = iam.get_role(RoleName="LabRole")
+    return role["Role"]["Arn"]
+
+
 def create_stack(cfn):
     """
     Deploy the sandbox CloudFormation stack and block until creation completes.
 
-    Uses CAPABILITY_NAMED_IAM because the template creates a named IAM role
-    (web-search-sandbox-role). Polls every 5 seconds, times out after 5 minutes.
+    Passes the LabRole ARN as a parameter so the Lambda can assume it.
+    Polls every 5 seconds, times out after 5 minutes.
 
     Args:
         cfn: boto3 CloudFormation client.
@@ -55,11 +131,16 @@ def create_stack(cfn):
     with open(TEMPLATE_PATH) as f:
         template_body = f.read()
 
+    lab_role_arn = get_lab_role_arn()
+
     print(f"Creating stack '{STACK_NAME}'...")
     cfn.create_stack(
         StackName=STACK_NAME,
         TemplateBody=template_body,
-        Capabilities=["CAPABILITY_NAMED_IAM"],
+        Parameters=[
+            {"ParameterKey": "LabRoleArn", "ParameterValue": lab_role_arn},
+        ],
+        Capabilities=["CAPABILITY_IAM"],
     )
     waiter = cfn.get_waiter("stack_create_complete")
     waiter.wait(StackName=STACK_NAME, WaiterConfig={"Delay": 5, "MaxAttempts": 60})
@@ -136,7 +217,8 @@ def main():
 
     query = " ".join(sys.argv[1:])
 
-    ensure_stack()
+    ensure_secret()   # push API key from .env to Secrets Manager if not already there
+    ensure_stack()    # deploy CFN stack if not already up
     result = invoke_lambda(query)
     print(json.dumps(result, indent=2))
 

@@ -1,5 +1,33 @@
 # Cloud-Native Security for Multi-Agent AI Systems
 
+## Quickstart
+
+**Prerequisites:** AWS account, AWS credentials in `~/.aws/credentials`, Python 3.11+, [uv](https://docs.astral.sh/uv/)
+
+```bash
+# 1. Install dependencies
+uv sync
+
+# 2. Add your OpenAI API key to .env
+echo "OPENAI_API_KEY=sk-..." > .env
+
+# 3. Run a search — first run bootstraps everything automatically:
+#    - pushes OPENAI_API_KEY from .env into AWS Secrets Manager
+#    - deploys the CloudFormation sandbox stack (~30–60s)
+#    - invokes the Lambda and returns a structured result
+uv run python scripts/invoke_search.py "your search query"
+
+# 4. Tear down sandbox resources when done
+uv run python scripts/teardown.py
+```
+
+> The sandbox stack persists across searches in a session and is automatically
+> deleted by the Claude Code Stop hook when the session ends.
+
+---
+
+
+
 > **CSCI 420 – Cloud Computing | William & Mary | Spring 2026**
 > **Project Type:** Cloudify Your Interest
 > **Team size:** 2–3 students

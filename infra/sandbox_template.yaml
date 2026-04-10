@@ -1,50 +1,22 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  Web search sandbox — ephemeral Lambda + scoped IAM role for AI agent isolation.
-  Provisions a least-privilege execution environment that calls the OpenAI web
-  search API and returns a structured, filtered response. Intended to be created
-  at session start and deleted at session end.
+  Web search sandbox — ephemeral Lambda for AI agent isolation.
+  Uses the pre-existing LabRole (AWS Academy) instead of creating an IAM role,
+  since Academy accounts do not permit iam:CreateRole.
 
 Parameters:
-  OpenAISecretName:
+  LabRoleArn:
     Type: String
-    Default: openai-api-key
-    Description: Name of the Secrets Manager secret containing the OpenAI API key.
+    Description: ARN of the pre-existing LabRole to attach to the Lambda function.
 
 Resources:
-  LambdaExecutionRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: web-search-sandbox-role
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      Policies:
-        - PolicyName: web-search-sandbox-policy
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action: secretsmanager:GetSecretValue
-                Resource: !Sub "arn:aws:secretsmanager:us-east-1:${AWS::AccountId}:secret:${OpenAISecretName}*"
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: "*"
-
   SearchLambda:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: web-search-sandbox-fn
       Runtime: python3.12
       Handler: index.handler
-      Role: !GetAtt LambdaExecutionRole.Arn
+      Role: !Ref LabRoleArn
       Timeout: 30
       Code:
         ZipFile: |

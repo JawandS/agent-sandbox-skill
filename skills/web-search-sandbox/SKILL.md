@@ -59,8 +59,9 @@ python scripts/teardown.py
 
 ## Prerequisites
 
-- AWS credentials configured (`aws configure` or environment variables)
-- OpenAI API key stored in AWS Secrets Manager as `openai-api-key`
-  - Plain string: the raw API key
-  - JSON object: `{"api_key": "sk-..."}`
-- `boto3` installed (`pip install boto3`)
+- AWS credentials configured in `~/.aws/credentials`
+- `OPENAI_API_KEY=sk-...` present in the `.env` file at the project root
+- Dependencies installed: `uv sync`
+
+On first run the script automatically pushes `OPENAI_API_KEY` from `.env` into
+AWS Secrets Manager (`openai-api-key`). No manual secret setup required.
