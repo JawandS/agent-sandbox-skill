@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd /home/js/cloud-computing/agent-sandbox-skill && python scripts/teardown.py 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}

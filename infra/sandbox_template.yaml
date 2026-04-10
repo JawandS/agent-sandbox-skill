@@ -1,0 +1,105 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Web search sandbox — ephemeral Lambda + scoped IAM role for AI agent isolation.
+  Provisions a least-privilege execution environment that calls the OpenAI web
+  search API and returns a structured, filtered response. Intended to be created
+  at session start and deleted at session end.
+
+Parameters:
+  OpenAISecretName:
+    Type: String
+    Default: openai-api-key
+    Description: Name of the Secrets Manager secret containing the OpenAI API key.
+
+Resources:
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: web-search-sandbox-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: web-search-sandbox-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Sub "arn:aws:secretsmanager:us-east-1:${AWS::AccountId}:secret:${OpenAISecretName}*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  SearchLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: web-search-sandbox-fn
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 30
+      Code:
+        ZipFile: |
+          import json, urllib.request, boto3, datetime
+
+          def handler(event, context):
+              sm = boto3.client("secretsmanager", region_name="us-east-1")
+              secret = sm.get_secret_value(SecretId="openai-api-key")["SecretString"]
+              api_key = json.loads(secret)["api_key"] if secret.strip().startswith("{") else secret.strip()
+
+              query = event.get("query", "")
+              if not query:
+                  return {"error": "Missing required field: query"}
+
+              payload = json.dumps({
+                  "model": "gpt-4o-mini",
+                  "tools": [{"type": "web_search_preview"}],
+                  "input": query,
+              }).encode()
+
+              req = urllib.request.Request(
+                  "https://api.openai.com/v1/responses",
+                  data=payload,
+                  headers={
+                      "Authorization": f"Bearer {api_key}",
+                      "Content-Type": "application/json",
+                  },
+              )
+
+              with urllib.request.urlopen(req, timeout=25) as resp:
+                  data = json.loads(resp.read())
+
+              message = next(o for o in data["output"] if o["type"] == "message")
+              content = message["content"][0]
+              text = content["text"]
+              annotations = content.get("annotations", [])
+
+              sources = [
+                  {
+                      "title": a.get("title", ""),
+                      "url": a["url"],
+                      "snippet": text[a["start_index"]: a["end_index"]],
+                  }
+                  for a in annotations
+                  if a["type"] == "url_citation"
+              ]
+
+              return {
+                  "query": query,
+                  "summary": text,
+                  "sources": sources,
+                  "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+              }
+
+Outputs:
+  LambdaFunctionName:
+    Value: !Ref SearchLambda
+    Description: Lambda function name for invocation
