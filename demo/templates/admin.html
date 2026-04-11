@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin — Agent Sandbox</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>Agent Sandbox Demo</h1>
+    <nav><a href="/">Back to Demo</a></nav>
+  </header>
+
+  <main class="admin-main">
+    <h2>Configure Credentials</h2>
+    <p class="admin-note">
+      AWS credentials are stored in memory only and cleared on restart.
+      The OpenAI key is read from Secrets Manager — run
+      <code>scripts/invoke_search.py</code> once to seed it from <code>.env</code>.
+    </p>
+
+    {% if saved %}
+    <div class="banner banner-ok">Credentials saved successfully.</div>
+    {% endif %}
+    {% if error %}
+    <div class="banner banner-error">{{ error }}</div>
+    {% endif %}
+
+    <form method="post" action="/admin" class="admin-form">
+      <fieldset>
+        <legend>AWS Credentials</legend>
+
+        <label for="creds_block">Paste credentials block</label>
+        <textarea
+          id="creds_block"
+          name="creds_block"
+          rows="4"
+          required
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="aws_access_key_id=...
+aws_secret_access_key=...
+aws_session_token=..."
+        >{{ creds.creds_block or '' }}</textarea>
+
+        <label for="region">Region</label>
+        <input
+          id="region"
+          name="region"
+          type="text"
+          value="{{ creds.region or 'us-east-1' }}"
+          placeholder="us-east-1"
+        />
+      </fieldset>
+
+      <button type="submit" class="btn-primary">Save Credentials</button>
+    </form>
+  </main>
+</body>
+</html>

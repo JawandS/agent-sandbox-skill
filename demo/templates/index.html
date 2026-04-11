@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Sandbox Demo</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>Agent Sandbox Demo</h1>
+    <nav><button class="nav-btn" id="open-modal-btn">Configure Credentials</button></nav>
+  </header>
+
+  <!-- Credentials modal -->
+  <div id="modal-backdrop" class="modal-backdrop" style="display:none" aria-modal="true" role="dialog">
+    <div class="modal">
+      <div class="modal-header">
+        <span>AWS Credentials</span>
+        <button class="modal-close" id="modal-close-btn" aria-label="Close">&times;</button>
+      </div>
+      <p class="modal-note">
+        Stored in memory only. The OpenAI key is read from Secrets Manager —
+        run <code>scripts/invoke_search.py</code> once to seed it from <code>.env</code>.
+      </p>
+      <div id="modal-error" class="banner banner-error" style="display:none"></div>
+      <form id="creds-form" class="admin-form">
+        <label for="creds_block">Paste credentials block</label>
+        <textarea
+          id="creds_block"
+          name="creds_block"
+          rows="4"
+          required
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="aws_access_key_id=...
+aws_secret_access_key=...
+aws_session_token=..."
+        ></textarea>
+        <label for="modal-region">Region</label>
+        <input id="modal-region" name="region" type="text" value="us-east-1" placeholder="us-east-1" />
+        <button type="submit" class="btn-primary" id="creds-save-btn">Save Credentials</button>
+      </form>
+    </div>
+  </div>
+
+  <main>
+    <!-- Search form -->
+    <section class="search-section">
+      <form id="search-form">
+        <input
+          id="query-input"
+          type="text"
+          name="query"
+          placeholder="Enter a search query..."
+          autocomplete="off"
+          required
+        />
+        <button type="submit" id="submit-btn">Search</button>
+      </form>
+    </section>
+
+    <!-- Agent diagram -->
+    <section class="diagram">
+      <div class="agent-box" id="box-orchestrator">
+        <div class="agent-label">Orchestrator</div>
+        <div class="agent-status" id="status-orchestrator">Idle</div>
+      </div>
+
+      <div class="connector" id="connector">
+        <div class="connector-line"></div>
+        <div class="dots-container">
+          <span class="dot"></span>
+          <span class="dot"></span>
+          <span class="dot"></span>
+        </div>
+        <div class="arrow">&#9654;</div>
+      </div>
+
+      <div class="agent-box" id="box-agent">
+        <div class="agent-label">Search Agent</div>
+        <div class="agent-sublabel">(Lambda)</div>
+        <div class="agent-status" id="status-agent">Idle</div>
+      </div>
+    </section>
+
+    <!-- Activity log -->
+    <section class="log-section">
+      <div class="log-header">Activity Log</div>
+      <div id="activity-log" class="log-body">
+        <div class="log-entry log-placeholder">Waiting for query...</div>
+      </div>
+    </section>
+
+    <!-- Result panel -->
+    <section class="result-section" id="result-section" style="display:none">
+      <div class="result-header">
+        <span>Result</span>
+        <span id="result-query" class="result-query-label"></span>
+      </div>
+      <div id="result-body" class="result-body"></div>
+    </section>
+  </main>
+
+  <script>
+    const form = document.getElementById('search-form');
+    const submitBtn = document.getElementById('submit-btn');
+    const queryInput = document.getElementById('query-input');
+    const log = document.getElementById('activity-log');
+    const resultSection = document.getElementById('result-section');
+    const resultBody = document.getElementById('result-body');
+
+    const boxOrchestrator = document.getElementById('box-orchestrator');
+    const boxAgent = document.getElementById('box-agent');
+    const connector = document.getElementById('connector');
+    const statusOrchestrator = document.getElementById('status-orchestrator');
+    const statusAgent = document.getElementById('status-agent');
+
+    function timestamp() {
+      return new Date().toLocaleTimeString('en-US', { hour12: false });
+    }
+
+    function appendLog(message, cls) {
+      const placeholder = log.querySelector('.log-placeholder');
+      if (placeholder) placeholder.remove();
+
+      const entry = document.createElement('div');
+      entry.className = cls ? 'log-entry ' + cls : 'log-entry';
+      entry.textContent = '[' + timestamp() + '] ' + message;
+      log.appendChild(entry);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function setActive(box, statusEl, text) {
+      box.classList.add('active');
+      statusEl.textContent = text;
+    }
+
+    function setIdle(box, statusEl) {
+      box.classList.remove('active');
+      statusEl.textContent = 'Idle';
+    }
+
+    function reset() {
+      setIdle(boxOrchestrator, statusOrchestrator);
+      setIdle(boxAgent, statusAgent);
+      connector.classList.remove('animating');
+      resultSection.style.display = 'none';
+      while (resultBody.firstChild) resultBody.removeChild(resultBody.firstChild);
+
+      while (log.firstChild) log.removeChild(log.firstChild);
+      const placeholder = document.createElement('div');
+      placeholder.className = 'log-entry log-placeholder';
+      placeholder.textContent = 'Waiting for query...';
+      log.appendChild(placeholder);
+    }
+
+    function handleEvent(type, message) {
+      switch (type) {
+        case 'orchestrator:start':
+          setActive(boxOrchestrator, statusOrchestrator, 'Active');
+          appendLog(message);
+          break;
+
+        case 'secret:check':
+        case 'stack:check':
+          appendLog(message);
+          break;
+
+        case 'stack:creating':
+          connector.classList.add('animating');
+          appendLog(message, 'log-warn');
+          break;
+
+        case 'stack:ready':
+          connector.classList.remove('animating');
+          appendLog(message, 'log-ok');
+          break;
+
+        case 'lambda:invoking':
+          setActive(boxAgent, statusAgent, 'Running');
+          connector.classList.add('animating');
+          appendLog(message);
+          break;
+
+        case 'lambda:done': {
+          connector.classList.remove('animating');
+          setIdle(boxOrchestrator, statusOrchestrator);
+          setActive(boxAgent, statusAgent, 'Done');
+          appendLog('Result received \u2713', 'log-ok');
+          try {
+            const result = JSON.parse(message);
+            renderResult(result);
+          } catch {
+            const pre = document.createElement('pre');
+            pre.textContent = message;
+            resultBody.appendChild(pre);
+            resultSection.style.display = 'block';
+          }
+          break;
+        }
+
+        case 'error':
+          connector.classList.remove('animating');
+          setIdle(boxOrchestrator, statusOrchestrator);
+          setIdle(boxAgent, statusAgent);
+          appendLog('Error: ' + message, 'log-error');
+          break;
+      }
+    }
+
+    function renderResult(result) {
+      while (resultBody.firstChild) resultBody.removeChild(resultBody.firstChild);
+
+      // Show query in header
+      const queryLabel = document.getElementById('result-query');
+      queryLabel.textContent = result.query ? '\u201c' + result.query + '\u201d' : '';
+
+      // Summary
+      if (result.summary) {
+        const p = document.createElement('p');
+        p.className = 'result-summary';
+        p.textContent = result.summary;
+        resultBody.appendChild(p);
+      }
+
+      // Sources
+      if (result.sources && result.sources.length) {
+        const heading = document.createElement('div');
+        heading.className = 'result-sources-heading';
+        heading.textContent = 'Sources';
+        resultBody.appendChild(heading);
+
+        const ul = document.createElement('ul');
+        ul.className = 'result-sources';
+        for (const src of result.sources) {
+          const li = document.createElement('li');
+          const a = document.createElement('a');
+          a.href = src.url;
+          a.target = '_blank';
+          a.rel = 'noopener noreferrer';
+          a.textContent = src.title || src.url;
+          li.appendChild(a);
+          if (src.snippet) {
+            const snippet = document.createElement('p');
+            snippet.className = 'source-snippet';
+            snippet.textContent = src.snippet;
+            li.appendChild(snippet);
+          }
+          ul.appendChild(li);
+        }
+        resultBody.appendChild(ul);
+      }
+
+      resultSection.style.display = 'block';
+      resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const query = queryInput.value.trim();
+      if (!query) return;
+
+      reset();
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Running...';
+
+      try {
+        const res = await fetch('/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query }),
+        });
+        const data = await res.json();
+
+        if (!res.ok || data.error) {
+          appendLog('Error: ' + (data.error || 'Unknown error'), 'log-error');
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Search';
+          return;
+        }
+
+        const jobId = data.job_id;
+        const es = new EventSource('/stream/' + jobId);
+
+        es.addEventListener('progress', (ev) => {
+          try {
+            const parsed = JSON.parse(ev.data);
+            handleEvent(parsed.type, parsed.message);
+          } catch (_) {}
+        });
+
+        es.addEventListener('done', () => {
+          es.close();
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Search';
+          setIdle(boxOrchestrator, statusOrchestrator);
+        });
+
+        es.addEventListener('error', () => {
+          es.close();
+          appendLog('Stream connection lost', 'log-error');
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Search';
+        });
+
+      } catch (err) {
+        appendLog('Request failed: ' + err.message, 'log-error');
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Search';
+      }
+    });
+  </script>
+
+  <script>
+    const backdrop = document.getElementById('modal-backdrop');
+    const openBtn = document.getElementById('open-modal-btn');
+    const closeBtn = document.getElementById('modal-close-btn');
+    const credsForm = document.getElementById('creds-form');
+    const modalError = document.getElementById('modal-error');
+    const saveBtn = document.getElementById('creds-save-btn');
+
+    function openModal() { backdrop.style.display = 'flex'; }
+    function closeModal() { backdrop.style.display = 'none'; modalError.style.display = 'none'; }
+
+    openBtn.addEventListener('click', openModal);
+    closeBtn.addEventListener('click', closeModal);
+    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) closeModal(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+
+    credsForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      saveBtn.disabled = true;
+      saveBtn.textContent = 'Saving...';
+      modalError.style.display = 'none';
+
+      const data = new FormData(credsForm);
+      try {
+        const res = await fetch('/admin/json', { method: 'POST', body: data });
+        const json = await res.json();
+        if (!res.ok || json.error) {
+          modalError.textContent = json.error || 'Failed to save credentials.';
+          modalError.style.display = 'block';
+        } else {
+          closeModal();
+          openBtn.textContent = 'Credentials \u2713';
+        }
+      } catch (err) {
+        modalError.textContent = 'Request failed: ' + err.message;
+        modalError.style.display = 'block';
+      } finally {
+        saveBtn.disabled = false;
+        saveBtn.textContent = 'Save Credentials';
+      }
+    });
+
+    // Auto-open if no credentials are set
+    if (!{{ 'true' if has_creds else 'false' }}) openModal();
+  </script>
+</body>
+</html>
