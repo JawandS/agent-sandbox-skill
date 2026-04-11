@@ -24,7 +24,7 @@
         run <code>scripts/invoke_search.py</code> once to seed it from <code>.env</code>.
       </p>
       <div id="modal-error" class="banner banner-error" style="display:none"></div>
-      <form id="creds-form" class="admin-form">
+      <form id="creds-form" class="creds-form">
         <label for="creds_block">Paste credentials block</label>
         <textarea
           id="creds_block"
@@ -45,6 +45,21 @@ aws_session_token=..."
   </div>
 
   <main>
+    <!-- Session bar -->
+    <div class="session-bar">
+      <div class="session-left">
+        <span class="session-dot" id="session-dot"></span>
+        <span class="session-label" id="session-label">Session Active</span>
+      </div>
+      <div class="session-center">
+        <span class="infra-label">CFN Stack</span>
+        <span class="stack-pill" id="stack-pill" data-state="unknown">unknown</span>
+      </div>
+      <div class="session-right">
+        <button class="end-session-btn" id="end-session-btn">End Session</button>
+      </div>
+    </div>
+
     <!-- Search form -->
     <section class="search-section">
       <form id="search-form">
@@ -52,35 +67,84 @@ aws_session_token=..."
           id="query-input"
           type="text"
           name="query"
-          placeholder="Enter a search query..."
+          placeholder="Ask the agent to search for something..."
           autocomplete="off"
           required
         />
-        <button type="submit" id="submit-btn">Search</button>
+        <button type="submit" id="submit-btn">
+          <span class="btn-icon">&#9654;</span> Run
+        </button>
       </form>
     </section>
 
-    <!-- Agent diagram -->
-    <section class="diagram">
-      <div class="agent-box" id="box-orchestrator">
-        <div class="agent-label">Orchestrator</div>
-        <div class="agent-status" id="status-orchestrator">Idle</div>
-      </div>
+    <!-- Diagram -->
+    <section class="diagram-section">
+      <div class="diagram-grid">
 
-      <div class="connector" id="connector">
-        <div class="connector-line"></div>
-        <div class="dots-container">
-          <span class="dot"></span>
-          <span class="dot"></span>
-          <span class="dot"></span>
+        <!-- Orchestrator node -->
+        <div class="node" id="node-orchestrator">
+          <div class="node-icon-wrap">
+            <svg class="node-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8" stroke-dasharray="3 2"/>
+              <line x1="12" y1="4" x2="12" y2="2"/><line x1="12" y1="22" x2="12" y2="20"/>
+              <line x1="4" y1="12" x2="2" y2="12"/><line x1="22" y1="12" x2="20" y2="12"/>
+            </svg>
+          </div>
+          <div class="node-title">Orchestrator</div>
+          <div class="node-badge" id="badge-orchestrator" data-state="idle">idle</div>
         </div>
-        <div class="arrow">&#9654;</div>
-      </div>
 
-      <div class="agent-box" id="box-agent">
-        <div class="agent-label">Search Agent</div>
-        <div class="agent-sublabel">(Lambda)</div>
-        <div class="agent-status" id="status-agent">Idle</div>
+        <!-- Horizontal connector -->
+        <div class="h-connector" id="h-connector">
+          <div class="conn-track">
+            <div class="conn-line"></div>
+            <div class="conn-dots">
+              <span class="conn-dot"></span>
+              <span class="conn-dot"></span>
+              <span class="conn-dot"></span>
+            </div>
+          </div>
+          <div class="conn-arrow">&#9654;</div>
+        </div>
+
+        <!-- Search Agent (Lambda) node -->
+        <div class="node" id="node-agent">
+          <div class="node-icon-wrap">
+            <svg class="node-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+              <path d="M8 12l3 3 5-6"/>
+            </svg>
+          </div>
+          <div class="node-title">Search Agent</div>
+          <div class="node-sub">Lambda</div>
+          <div class="node-badge" id="badge-agent" data-state="idle">idle</div>
+        </div>
+
+        <!-- Vertical connector (agent → secrets) -->
+        <div class="v-connector" id="v-connector">
+          <div class="v-conn-line"></div>
+          <div class="v-conn-dots">
+            <span class="v-dot"></span>
+            <span class="v-dot"></span>
+            <span class="v-dot"></span>
+          </div>
+          <div class="v-conn-label">reads secret</div>
+          <div class="v-conn-arrow">&#9660;</div>
+        </div>
+
+        <!-- Secrets Manager node -->
+        <div class="node" id="node-secrets">
+          <div class="node-icon-wrap">
+            <svg class="node-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="5" y="11" width="14" height="10" rx="2"/>
+              <path d="M8 11V7a4 4 0 018 0v4"/>
+              <circle cx="12" cy="16" r="1" fill="currentColor"/>
+            </svg>
+          </div>
+          <div class="node-title">Secrets Manager</div>
+          <div class="node-badge" id="badge-secrets" data-state="unknown">unknown</div>
+        </div>
+
       </div>
     </section>
 
@@ -96,127 +160,302 @@ aws_session_token=..."
     <section class="result-section" id="result-section" style="display:none">
       <div class="result-header">
         <span>Result</span>
-        <span id="result-query" class="result-query-label"></span>
+        <span id="result-query-label" class="result-query-label"></span>
       </div>
       <div id="result-body" class="result-body"></div>
     </section>
   </main>
 
   <script>
-    const form = document.getElementById('search-form');
-    const submitBtn = document.getElementById('submit-btn');
-    const queryInput = document.getElementById('query-input');
-    const log = document.getElementById('activity-log');
-    const resultSection = document.getElementById('result-section');
-    const resultBody = document.getElementById('result-body');
+    // ── Element refs ──────────────────────────────────────────────────────────
+    const form        = document.getElementById('search-form');
+    const submitBtn   = document.getElementById('submit-btn');
+    const queryInput  = document.getElementById('query-input');
+    const log         = document.getElementById('activity-log');
+    const resultSec   = document.getElementById('result-section');
+    const resultBody  = document.getElementById('result-body');
 
-    const boxOrchestrator = document.getElementById('box-orchestrator');
-    const boxAgent = document.getElementById('box-agent');
-    const connector = document.getElementById('connector');
-    const statusOrchestrator = document.getElementById('status-orchestrator');
-    const statusAgent = document.getElementById('status-agent');
+    const nodeOrch    = document.getElementById('node-orchestrator');
+    const nodeAgent   = document.getElementById('node-agent');
+    const nodeSecrets = document.getElementById('node-secrets');
+    const hConn       = document.getElementById('h-connector');
+    const vConn       = document.getElementById('v-connector');
+    const badgeOrch   = document.getElementById('badge-orchestrator');
+    const badgeAgent  = document.getElementById('badge-agent');
+    const badgeSecret = document.getElementById('badge-secrets');
 
-    function timestamp() {
+    const sessionDot   = document.getElementById('session-dot');
+    const sessionLabel = document.getElementById('session-label');
+    const stackPill    = document.getElementById('stack-pill');
+    const endBtn       = document.getElementById('end-session-btn');
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+    function ts() {
       return new Date().toLocaleTimeString('en-US', { hour12: false });
     }
 
-    function appendLog(message, cls) {
-      const placeholder = log.querySelector('.log-placeholder');
-      if (placeholder) placeholder.remove();
-
-      const entry = document.createElement('div');
-      entry.className = cls ? 'log-entry ' + cls : 'log-entry';
-      entry.textContent = '[' + timestamp() + '] ' + message;
-      log.appendChild(entry);
+    function appendLog(msg, cls) {
+      const ph = log.querySelector('.log-placeholder');
+      if (ph) ph.remove();
+      const el = document.createElement('div');
+      el.className = cls ? 'log-entry ' + cls : 'log-entry';
+      el.textContent = '[' + ts() + '] ' + msg;
+      log.appendChild(el);
       log.scrollTop = log.scrollHeight;
     }
 
-    function setActive(box, statusEl, text) {
-      box.classList.add('active');
-      statusEl.textContent = text;
+    function setBadge(el, state, label) {
+      el.dataset.state = state;
+      el.textContent = label || state;
     }
 
-    function setIdle(box, statusEl) {
-      box.classList.remove('active');
-      statusEl.textContent = 'Idle';
+    function setNodeActive(node) { node.classList.add('active'); }
+    function setNodeIdle(node)   { node.classList.remove('active'); }
+
+    function setStackPill(state, label) {
+      stackPill.dataset.state = state;
+      stackPill.textContent = label || state;
     }
 
-    function reset() {
-      setIdle(boxOrchestrator, statusOrchestrator);
-      setIdle(boxAgent, statusAgent);
-      connector.classList.remove('animating');
-      resultSection.style.display = 'none';
+    function setSessionState(state) {
+      // state: 'active' | 'ending' | 'ended'
+      sessionDot.dataset.state = state;
+      if (state === 'active')  sessionLabel.textContent = 'Session Active';
+      if (state === 'ending')  sessionLabel.textContent = 'Ending session\u2026';
+      if (state === 'ended')   sessionLabel.textContent = 'Session Ended';
+    }
+
+    // ── Status poll (on load) ─────────────────────────────────────────────────
+    async function pollStatus() {
+      try {
+        const res = await fetch('/status');
+        const { secret, stack } = await res.json();
+        applySecretStatus(secret);
+        applyStackStatus(stack);
+      } catch (_) {}
+    }
+
+    function applySecretStatus(s) {
+      if (s === 'set')     setBadge(badgeSecret, 'ok', 'set');
+      else if (s === 'not_set') setBadge(badgeSecret, 'error', 'not set');
+      else                 setBadge(badgeSecret, 'unknown', 'unknown');
+    }
+
+    function applyStackStatus(s) {
+      if (s === 'active')   { setBadge(badgeAgent, 'idle', 'idle'); setStackPill('active', 'active'); }
+      else if (s === 'inactive') setStackPill('inactive', 'inactive');
+      else if (s === 'deploying') setStackPill('deploying', 'deploying\u2026');
+      else setStackPill('unknown', 'unknown');
+    }
+
+    // ── Search event handler ──────────────────────────────────────────────────
+    function resetDiagram() {
+      setNodeIdle(nodeOrch);
+      setNodeIdle(nodeAgent);
+      hConn.classList.remove('active');
+      vConn.classList.remove('active');
+      setBadge(badgeOrch, 'idle', 'idle');
+      setBadge(badgeAgent, 'idle', 'idle');
+      resultSec.style.display = 'none';
       while (resultBody.firstChild) resultBody.removeChild(resultBody.firstChild);
-
       while (log.firstChild) log.removeChild(log.firstChild);
-      const placeholder = document.createElement('div');
-      placeholder.className = 'log-entry log-placeholder';
-      placeholder.textContent = 'Waiting for query...';
-      log.appendChild(placeholder);
+      const ph = document.createElement('div');
+      ph.className = 'log-entry log-placeholder';
+      ph.textContent = 'Waiting for query...';
+      log.appendChild(ph);
     }
 
     function handleEvent(type, message) {
       switch (type) {
         case 'orchestrator:start':
-          setActive(boxOrchestrator, statusOrchestrator, 'Active');
+          setNodeActive(nodeOrch);
+          setBadge(badgeOrch, 'active', 'active');
           appendLog(message);
           break;
 
         case 'secret:check':
+          setBadge(badgeSecret, 'checking', 'checking\u2026');
+          appendLog(message);
+          break;
+
+        case 'secret:found':
+          setBadge(badgeSecret, 'ok', 'set');
+          setNodeActive(nodeSecrets);
+          vConn.classList.add('active');
+          appendLog(message, 'log-ok');
+          break;
+
+        case 'secret:missing':
+          setBadge(badgeSecret, 'error', 'not set');
+          appendLog(message, 'log-error');
+          break;
+
         case 'stack:check':
           appendLog(message);
           break;
 
         case 'stack:creating':
-          connector.classList.add('animating');
+          setStackPill('deploying', 'deploying\u2026');
           appendLog(message, 'log-warn');
           break;
 
         case 'stack:ready':
-          connector.classList.remove('animating');
+          setStackPill('active', 'active');
           appendLog(message, 'log-ok');
           break;
 
         case 'lambda:invoking':
-          setActive(boxAgent, statusAgent, 'Running');
-          connector.classList.add('animating');
+          setNodeActive(nodeAgent);
+          setBadge(badgeAgent, 'running', 'running');
+          hConn.classList.add('active');
           appendLog(message);
           break;
 
-        case 'lambda:done': {
-          connector.classList.remove('animating');
-          setIdle(boxOrchestrator, statusOrchestrator);
-          setActive(boxAgent, statusAgent, 'Done');
+        case 'lambda:done':
+          hConn.classList.remove('active');
+          setNodeIdle(nodeOrch);
+          setBadge(badgeOrch, 'idle', 'idle');
+          setBadge(badgeAgent, 'done', 'done');
           appendLog('Result received \u2713', 'log-ok');
-          try {
-            const result = JSON.parse(message);
-            renderResult(result);
-          } catch {
+          try { renderResult(JSON.parse(message)); } catch (_) {
             const pre = document.createElement('pre');
             pre.textContent = message;
             resultBody.appendChild(pre);
-            resultSection.style.display = 'block';
+            resultSec.style.display = 'block';
           }
           break;
-        }
 
         case 'error':
-          connector.classList.remove('animating');
-          setIdle(boxOrchestrator, statusOrchestrator);
-          setIdle(boxAgent, statusAgent);
+          hConn.classList.remove('active');
+          vConn.classList.remove('active');
+          setNodeIdle(nodeOrch);
+          setNodeIdle(nodeAgent);
+          setBadge(badgeOrch, 'idle', 'idle');
+          setBadge(badgeAgent, 'idle', 'idle');
           appendLog('Error: ' + message, 'log-error');
+          break;
+
+        // ── Teardown events ───────────────────────────────────────────────────
+        case 'teardown:start':
+          setSessionState('ending');
+          appendLog(message, 'log-warn');
+          break;
+
+        case 'teardown:stack_deleting':
+          setStackPill('deleting', 'deleting\u2026');
+          appendLog(message, 'log-warn');
+          break;
+
+        case 'teardown:stack_done':
+          setStackPill('inactive', 'inactive');
+          appendLog(message, 'log-ok');
+          break;
+
+        case 'teardown:done':
+          setSessionState('ended');
+          setNodeIdle(nodeOrch);
+          setNodeIdle(nodeAgent);
+          setBadge(badgeOrch, 'idle', 'idle');
+          setBadge(badgeAgent, 'idle', 'idle');
+          hConn.classList.remove('active');
+          vConn.classList.remove('active');
+          appendLog(message, 'log-ok');
+          endBtn.disabled = true;
+          endBtn.textContent = 'Session Ended';
           break;
       }
     }
 
+    // ── Search submit ─────────────────────────────────────────────────────────
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const query = queryInput.value.trim();
+      if (!query) return;
+
+      resetDiagram();
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Running\u2026';
+
+      try {
+        const res = await fetch('/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query }),
+        });
+        const data = await res.json();
+
+        if (!res.ok || data.error) {
+          appendLog('Error: ' + (data.error || 'Unknown'), 'log-error');
+          submitBtn.disabled = false;
+          submitBtn.innerHTML = '<span class="btn-icon">&#9654;</span> Run';
+          return;
+        }
+
+        const es = new EventSource('/stream/' + data.job_id);
+        es.addEventListener('progress', (ev) => {
+          try { const p = JSON.parse(ev.data); handleEvent(p.type, p.message); } catch (_) {}
+        });
+        es.addEventListener('done', () => {
+          es.close();
+          submitBtn.disabled = false;
+          submitBtn.innerHTML = '<span class="btn-icon">&#9654;</span> Run';
+          setNodeIdle(nodeOrch);
+        });
+        es.addEventListener('error', () => {
+          es.close();
+          appendLog('Stream connection lost', 'log-error');
+          submitBtn.disabled = false;
+          submitBtn.innerHTML = '<span class="btn-icon">&#9654;</span> Run';
+        });
+
+      } catch (err) {
+        appendLog('Request failed: ' + err.message, 'log-error');
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = '<span class="btn-icon">&#9654;</span> Run';
+      }
+    });
+
+    // ── End Session ───────────────────────────────────────────────────────────
+    endBtn.addEventListener('click', async () => {
+      if (endBtn.disabled) return;
+      endBtn.disabled = true;
+      endBtn.textContent = 'Ending\u2026';
+
+      try {
+        const res = await fetch('/teardown', { method: 'POST' });
+        const data = await res.json();
+
+        if (!res.ok || data.error) {
+          appendLog('Teardown error: ' + (data.error || 'Unknown'), 'log-error');
+          endBtn.disabled = false;
+          endBtn.textContent = 'End Session';
+          return;
+        }
+
+        const es = new EventSource('/stream/' + data.job_id);
+        es.addEventListener('progress', (ev) => {
+          try { const p = JSON.parse(ev.data); handleEvent(p.type, p.message); } catch (_) {}
+        });
+        es.addEventListener('done', () => { es.close(); });
+        es.addEventListener('error', () => {
+          es.close();
+          appendLog('Teardown stream lost', 'log-error');
+        });
+
+      } catch (err) {
+        appendLog('Teardown failed: ' + err.message, 'log-error');
+        endBtn.disabled = false;
+        endBtn.textContent = 'End Session';
+      }
+    });
+
+    // ── Result render ─────────────────────────────────────────────────────────
     function renderResult(result) {
       while (resultBody.firstChild) resultBody.removeChild(resultBody.firstChild);
 
-      // Show query in header
-      const queryLabel = document.getElementById('result-query');
-      queryLabel.textContent = result.query ? '\u201c' + result.query + '\u201d' : '';
+      const ql = document.getElementById('result-query-label');
+      ql.textContent = result.query ? '\u201c' + result.query + '\u201d' : '';
 
-      // Summary
       if (result.summary) {
         const p = document.createElement('p');
         p.className = 'result-summary';
@@ -224,12 +463,11 @@ aws_session_token=..."
         resultBody.appendChild(p);
       }
 
-      // Sources
       if (result.sources && result.sources.length) {
-        const heading = document.createElement('div');
-        heading.className = 'result-sources-heading';
-        heading.textContent = 'Sources';
-        resultBody.appendChild(heading);
+        const h = document.createElement('div');
+        h.className = 'result-sources-heading';
+        h.textContent = 'Sources';
+        resultBody.appendChild(h);
 
         const ul = document.createElement('ul');
         ul.className = 'result-sources';
@@ -242,86 +480,30 @@ aws_session_token=..."
           a.textContent = src.title || src.url;
           li.appendChild(a);
           if (src.snippet) {
-            const snippet = document.createElement('p');
-            snippet.className = 'source-snippet';
-            snippet.textContent = src.snippet;
-            li.appendChild(snippet);
+            const sn = document.createElement('p');
+            sn.className = 'source-snippet';
+            sn.textContent = src.snippet;
+            li.appendChild(sn);
           }
           ul.appendChild(li);
         }
         resultBody.appendChild(ul);
       }
 
-      resultSection.style.display = 'block';
-      resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      resultSec.style.display = 'block';
+      resultSec.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const query = queryInput.value.trim();
-      if (!query) return;
-
-      reset();
-      submitBtn.disabled = true;
-      submitBtn.textContent = 'Running...';
-
-      try {
-        const res = await fetch('/search', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query }),
-        });
-        const data = await res.json();
-
-        if (!res.ok || data.error) {
-          appendLog('Error: ' + (data.error || 'Unknown error'), 'log-error');
-          submitBtn.disabled = false;
-          submitBtn.textContent = 'Search';
-          return;
-        }
-
-        const jobId = data.job_id;
-        const es = new EventSource('/stream/' + jobId);
-
-        es.addEventListener('progress', (ev) => {
-          try {
-            const parsed = JSON.parse(ev.data);
-            handleEvent(parsed.type, parsed.message);
-          } catch (_) {}
-        });
-
-        es.addEventListener('done', () => {
-          es.close();
-          submitBtn.disabled = false;
-          submitBtn.textContent = 'Search';
-          setIdle(boxOrchestrator, statusOrchestrator);
-        });
-
-        es.addEventListener('error', () => {
-          es.close();
-          appendLog('Stream connection lost', 'log-error');
-          submitBtn.disabled = false;
-          submitBtn.textContent = 'Search';
-        });
-
-      } catch (err) {
-        appendLog('Request failed: ' + err.message, 'log-error');
-        submitBtn.disabled = false;
-        submitBtn.textContent = 'Search';
-      }
-    });
-  </script>
-
-  <script>
-    const backdrop = document.getElementById('modal-backdrop');
-    const openBtn = document.getElementById('open-modal-btn');
-    const closeBtn = document.getElementById('modal-close-btn');
+    // ── Credentials modal ─────────────────────────────────────────────────────
+    const backdrop  = document.getElementById('modal-backdrop');
+    const openBtn   = document.getElementById('open-modal-btn');
+    const closeBtn  = document.getElementById('modal-close-btn');
     const credsForm = document.getElementById('creds-form');
-    const modalError = document.getElementById('modal-error');
-    const saveBtn = document.getElementById('creds-save-btn');
+    const modalErr  = document.getElementById('modal-error');
+    const saveBtn   = document.getElementById('creds-save-btn');
 
-    function openModal() { backdrop.style.display = 'flex'; }
-    function closeModal() { backdrop.style.display = 'none'; modalError.style.display = 'none'; }
+    const openModal  = () => { backdrop.style.display = 'flex'; };
+    const closeModal = () => { backdrop.style.display = 'none'; modalErr.style.display = 'none'; };
 
     openBtn.addEventListener('click', openModal);
     closeBtn.addEventListener('click', closeModal);
@@ -331,31 +513,35 @@ aws_session_token=..."
     credsForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       saveBtn.disabled = true;
-      saveBtn.textContent = 'Saving...';
-      modalError.style.display = 'none';
+      saveBtn.textContent = 'Saving\u2026';
+      modalErr.style.display = 'none';
 
-      const data = new FormData(credsForm);
       try {
-        const res = await fetch('/admin/json', { method: 'POST', body: data });
+        const res = await fetch('/admin/json', { method: 'POST', body: new FormData(credsForm) });
         const json = await res.json();
         if (!res.ok || json.error) {
-          modalError.textContent = json.error || 'Failed to save credentials.';
-          modalError.style.display = 'block';
+          modalErr.textContent = json.error || 'Failed to save.';
+          modalErr.style.display = 'block';
         } else {
           closeModal();
           openBtn.textContent = 'Credentials \u2713';
+          pollStatus();
         }
       } catch (err) {
-        modalError.textContent = 'Request failed: ' + err.message;
-        modalError.style.display = 'block';
+        modalErr.textContent = 'Request failed: ' + err.message;
+        modalErr.style.display = 'block';
       } finally {
         saveBtn.disabled = false;
         saveBtn.textContent = 'Save Credentials';
       }
     });
 
-    // Auto-open if no credentials are set
-    if (!{{ 'true' if has_creds else 'false' }}) openModal();
+    // ── Init ──────────────────────────────────────────────────────────────────
+    if (!{{ 'true' if has_creds else 'false' }}) {
+      openModal();
+    } else {
+      pollStatus();
+    }
   </script>
 </body>
 </html>

@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from agent import run_search
+from agent import get_infra_status, run_search, run_teardown
 
 app = FastAPI(title="Agent Sandbox Demo")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -106,6 +106,44 @@ async def admin_post_json(creds_block: str = Form(...), region: str = Form("us-e
         }
     )
     return JSONResponse({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Status + Teardown
+# ---------------------------------------------------------------------------
+
+
+@app.get("/status")
+async def status():
+    if not _credentials:
+        return JSONResponse({"secret": "unknown", "stack": "unknown"})
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, get_infra_status, dict(_credentials))
+    return JSONResponse(result)
+
+
+@app.post("/teardown")
+async def teardown():
+    if not _credentials:
+        return JSONResponse({"error": "No credentials set."}, status_code=400)
+
+    job_id = str(uuid.uuid4())
+    queue: asyncio.Queue = asyncio.Queue()
+    _jobs[job_id] = queue
+
+    async def on_event(event_type: str, message: str):
+        await queue.put({"type": event_type, "message": message})
+
+    async def run():
+        try:
+            await run_teardown(dict(_credentials), on_event)
+        except Exception as exc:
+            await queue.put({"type": "error", "message": str(exc)})
+        finally:
+            await queue.put(None)
+
+    asyncio.create_task(run())
+    return JSONResponse({"job_id": job_id})
 
 
 # ---------------------------------------------------------------------------
