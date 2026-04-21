@@ -21,7 +21,7 @@ Manual invocation is only needed if you want to tear down mid-session.
 
 ```bash
 cd /home/js/cloud-computing/agent-sandbox-skill
-python scripts/teardown.py
+uv run python .claude/skills/web-search-teardown/teardown.py
 ```
 
 The script will:
